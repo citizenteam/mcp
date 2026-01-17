@@ -5,9 +5,9 @@ MCP (Model Context Protocol) server for deploying applications to Citizen platfo
 ## Installation
 
 ```bash
-npm install -g @citizen/deployment-mcp
+npm install -g @citizenteam/mcp
 # or
-bun install -g @citizen/deployment-mcp
+bun install -g @citizenteam/mcp
 ```
 
 ## Claude Desktop Setup
