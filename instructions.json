@@ -1,0 +1,357 @@
+{
+  "name": "Citizen Deployment MCP",
+  "description": "Deploy applications to Citizen platform with full build monitoring and error handling",
+  "version": "1.0.0",
+
+  "workflows": {
+    "initial_setup": {
+      "description": "First time authentication and setup",
+      "steps": [
+        {
+          "action": "authenticate",
+          "description": "Authenticate with Citizen platform using device flow",
+          "tool": "authenticate",
+          "args": {},
+          "next_on_success": "list_organizations"
+        },
+        {
+          "action": "list_organizations",
+          "description": "List available organizations to understand which org you're working with",
+          "tool": "list_organizations",
+          "args": {}
+        }
+      ]
+    },
+
+    "deployment_from_git": {
+      "description": "Deploy from a git repository",
+      "when_to_use": "Use this when the user provides a git URL or mentions GitHub/GitLab repository",
+      "steps": [
+        {
+          "action": "check_auth",
+          "description": "First, always check authentication status",
+          "tool": "check_auth_status",
+          "args": {},
+          "error_handling": "If not authenticated, call 'authenticate' tool first"
+        },
+        {
+          "action": "list_apps",
+          "description": "List available apps to see which apps you have access to",
+          "tool": "list_apps",
+          "args": {},
+          "note": "This returns only apps you have permission to deploy. RBAC is enforced."
+        },
+        {
+          "action": "deploy",
+          "description": "Deploy from git repository",
+          "tool": "deploy_from_git",
+          "args": {
+            "app_name": "string - name of the app to deploy",
+            "git_url": "string - full git URL (https://github.com/user/repo.git)",
+            "git_branch": "string - branch name (optional, defaults to 'main')",
+            "builder": "string - 'auto', 'nixpacks', or 'dockerfile' (optional, defaults to 'auto')"
+          },
+          "returns": {
+            "run_id": "Use this to track deployment progress"
+          }
+        },
+        {
+          "action": "monitor_deployment",
+          "description": "Monitor deployment status and logs",
+          "tool": "get_deployment_status",
+          "args": {
+            "run_id": "string - from previous deploy step"
+          },
+          "poll_interval": "Poll every 5-10 seconds until status is 'completed' or 'failed'",
+          "important": "ALWAYS monitor deployment logs. If deployment fails, read the logs to understand the error."
+        }
+      ]
+    },
+
+    "deployment_from_local": {
+      "description": "Deploy from local directory",
+      "when_to_use": "Use this when the user wants to deploy current directory, local files, or doesn't have a git repository",
+      "steps": [
+        {
+          "action": "check_auth",
+          "tool": "check_auth_status",
+          "args": {}
+        },
+        {
+          "action": "list_apps",
+          "tool": "list_apps",
+          "args": {}
+        },
+        {
+          "action": "deploy",
+          "description": "Deploy from local directory - this will create tar.gz, upload, and deploy",
+          "tool": "deploy_from_local",
+          "args": {
+            "app_name": "string - name of the app",
+            "directory_path": "string - absolute path to directory (e.g., /home/user/myapp or .)",
+            "builder": "string - 'auto', 'nixpacks', or 'dockerfile' (optional)"
+          },
+          "note": "The MCP server will automatically create tar.gz and upload it. You don't need to do anything manually."
+        },
+        {
+          "action": "monitor_deployment",
+          "tool": "get_deployment_status",
+          "args": {
+            "run_id": "string - from deploy response"
+          }
+        }
+      ]
+    },
+
+    "error_handling_and_fixing": {
+      "description": "How to handle deployment errors and fix them",
+      "steps": [
+        {
+          "action": "read_deployment_logs",
+          "description": "When deployment fails, ALWAYS read the logs first",
+          "tool": "get_deployment_status",
+          "args": {
+            "run_id": "string"
+          },
+          "what_to_look_for": [
+            "Build step that failed (extracting, building, pushing, deploying)",
+            "Error messages in the logs",
+            "Missing dependencies",
+            "Python/Node/Go/Rust version mismatches",
+            "Missing environment variables",
+            "Port configuration issues"
+          ]
+        },
+        {
+          "action": "analyze_error",
+          "description": "Common errors and how to fix them",
+          "common_errors": {
+            "nixpacks_python_version": {
+              "error_pattern": "Python version X.Y not found",
+              "solution": "Add or update nixpacks.toml in project root",
+              "file_to_create": "nixpacks.toml",
+              "content_example": "[phases.setup]\nnixpkgs = ['python311']"
+            },
+            "nixpacks_nodejs_version": {
+              "error_pattern": "Node version X.Y not found",
+              "solution": "Add or update nixpacks.toml",
+              "content_example": "[phases.setup]\nnixpkgs = ['nodejs_20']"
+            },
+            "missing_dependencies": {
+              "error_pattern": "ModuleNotFoundError|Cannot find module|package not found",
+              "solution": "Check requirements.txt, package.json, go.mod, or Cargo.toml",
+              "action": "Update dependency file and redeploy"
+            },
+            "port_binding": {
+              "error_pattern": "address already in use|failed to bind",
+              "solution": "App must bind to 0.0.0.0:$PORT environment variable",
+              "example_python": "app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))",
+              "example_nodejs": "app.listen(process.env.PORT || 8080, '0.0.0.0')"
+            },
+            "dockerfile_build_failed": {
+              "error_pattern": "docker build failed|Dockerfile error",
+              "solution": "Check Dockerfile syntax, base image, and build steps",
+              "action": "Fix Dockerfile and redeploy"
+            },
+            "start_command_missing": {
+              "error_pattern": "no start command found|missing start script",
+              "solution": "Add start command to nixpacks.toml or package.json",
+              "nixpacks_example": "[start]\ncmd = 'python main.py'",
+              "package_json_example": "\"scripts\": { \"start\": \"node index.js\" }"
+            }
+          }
+        },
+        {
+          "action": "fix_and_redeploy",
+          "description": "After analyzing error, fix the issue and redeploy",
+          "workflow": [
+            "1. Identify the issue from logs",
+            "2. Create or update necessary config files (nixpacks.toml, package.json, requirements.txt, etc.)",
+            "3. If deploying from local: files are already updated in local directory",
+            "4. If deploying from git: user needs to commit and push changes to git, OR switch to deploy_from_local",
+            "5. Redeploy using the same tool (deploy_from_git or deploy_from_local)",
+            "6. Monitor new deployment run"
+          ]
+        }
+      ]
+    },
+
+    "monitoring_and_debugging": {
+      "description": "Continuous monitoring and debugging workflow",
+      "steps": [
+        {
+          "action": "list_recent_runs",
+          "description": "See recent deployment history for an app",
+          "tool": "list_deployment_runs",
+          "args": {
+            "app_name": "string"
+          }
+        },
+        {
+          "action": "get_detailed_logs",
+          "description": "Get detailed logs for any deployment run",
+          "tool": "get_deployment_status",
+          "args": {
+            "run_id": "string"
+          },
+          "note": "This returns step-by-step logs: extracting, building, pushing, deploying, cleanup"
+        }
+      ]
+    }
+  },
+
+  "best_practices": {
+    "always_check_auth_first": "Before any operation, call check_auth_status. If not authenticated, call authenticate.",
+    "list_apps_for_context": "Always call list_apps to see what apps exist and which ones you have access to.",
+    "monitor_deployments": "NEVER deploy and forget. Always monitor with get_deployment_status until completion.",
+    "read_logs_on_failure": "If deployment fails, ALWAYS read the full logs to understand what went wrong.",
+    "understand_rbac": "You may not have permission to all apps. list_apps returns only apps you can access. If you get 403 error, you don't have permission.",
+    "use_local_for_iteration": "When debugging and fixing issues, use deploy_from_local for faster iteration (no git commit needed).",
+    "builder_selection": "Use 'auto' builder unless you know the project needs specific builder. 'dockerfile' requires Dockerfile in project root.",
+    "poll_responsibly": "When monitoring deployment, poll every 5-10 seconds, not more frequently."
+  },
+
+  "permission_model": {
+    "viewer": "Can only list apps they're assigned to. Cannot deploy.",
+    "member": "Can deploy ONLY to apps they're explicitly assigned to.",
+    "admin": "Can deploy to ANY app in the organization.",
+    "owner": "Can deploy to ANY app in the organization.",
+    "note": "If you try to deploy to an app you don't have access to, you'll get 403 Forbidden error."
+  },
+
+  "deployment_steps_explained": {
+    "extracting": {
+      "description": "Source code is being extracted (git clone or tar.gz extraction)",
+      "typical_duration": "5-30 seconds",
+      "possible_errors": ["git clone failed", "invalid tar.gz", "authentication error"]
+    },
+    "building": {
+      "description": "Application is being built into a Docker image",
+      "typical_duration": "1-10 minutes depending on project size",
+      "possible_errors": [
+        "missing dependencies",
+        "version mismatches",
+        "build command failed",
+        "Dockerfile errors",
+        "out of memory"
+      ],
+      "what_to_check": [
+        "Check nixpacks.toml or Dockerfile",
+        "Verify dependency files (requirements.txt, package.json, go.mod, Cargo.toml)",
+        "Check for missing build tools or system packages"
+      ]
+    },
+    "pushing": {
+      "description": "Built Docker image is being pushed to registry",
+      "typical_duration": "30 seconds - 3 minutes",
+      "possible_errors": ["registry authentication failed", "disk space", "network issues"]
+    },
+    "deploying": {
+      "description": "Application is being deployed to Kubernetes (K3s)",
+      "typical_duration": "30 seconds - 2 minutes",
+      "possible_errors": [
+        "pod failed to start",
+        "health check failed",
+        "port binding issues",
+        "missing environment variables"
+      ],
+      "what_to_check": [
+        "App must listen on 0.0.0.0:$PORT",
+        "Check for startup errors in logs",
+        "Verify app actually starts and responds to health checks"
+      ]
+    },
+    "cleanup": {
+      "description": "Temporary files and old resources are being cleaned up",
+      "typical_duration": "5-15 seconds",
+      "rarely_fails": true
+    }
+  },
+
+  "example_conversations": [
+    {
+      "scenario": "User wants to deploy a Python Flask app from GitHub",
+      "conversation": [
+        "User: Deploy my Flask app from https://github.com/user/flask-app.git",
+        "Assistant: I'll help you deploy that. Let me first check authentication and list your apps.",
+        "Assistant calls: check_auth_status",
+        "Assistant calls: list_apps",
+        "Assistant: I see you have access to 'myapp'. I'll deploy to that app from the git URL.",
+        "Assistant calls: deploy_from_git with app_name='myapp', git_url='https://github.com/user/flask-app.git'",
+        "Assistant: Deployment started (run_id: run_abc123). Let me monitor the progress...",
+        "Assistant calls: get_deployment_status with run_id='run_abc123' (polls every 5 seconds)",
+        "Assistant: Build failed! I see the error: 'Python 3.11 not found'. Let me fix this.",
+        "Assistant: I'll create a nixpacks.toml file to specify Python 3.11. Since you're deploying from git, you'll need to commit this file, or I can deploy from your local directory instead. Which would you prefer?"
+      ]
+    },
+    {
+      "scenario": "User wants to deploy current directory",
+      "conversation": [
+        "User: Deploy the app in my current directory",
+        "Assistant: I'll deploy from your local directory. What's the app name?",
+        "User: myapp",
+        "Assistant calls: check_auth_status",
+        "Assistant calls: list_apps (to verify access)",
+        "Assistant calls: deploy_from_local with app_name='myapp', directory_path='.'",
+        "Assistant: Deployment started! The MCP server is creating tar.gz and uploading... Let me monitor progress.",
+        "Assistant calls: get_deployment_status (polls until completion)",
+        "Assistant: Deployment completed successfully! Your app is now live."
+      ]
+    },
+    {
+      "scenario": "Deployment fails and needs debugging",
+      "conversation": [
+        "User: My deployment failed, can you help?",
+        "Assistant: Let me check the recent deployments.",
+        "Assistant calls: list_deployment_runs with app_name",
+        "Assistant: I see the latest run failed. Let me get the detailed logs.",
+        "Assistant calls: get_deployment_status with run_id",
+        "Assistant: I found the issue. The build step failed because of a missing dependency 'requests' in requirements.txt. I also see the app is trying to bind to localhost instead of 0.0.0.0. Let me fix both issues.",
+        "Assistant: I'll update requirements.txt to add 'requests', and modify app.py to bind to 0.0.0.0:$PORT. Then I'll redeploy from local directory.",
+        "Assistant: (Updates files in local directory)",
+        "Assistant calls: deploy_from_local",
+        "Assistant: Redeploying with fixes... Monitoring...",
+        "Assistant: Success! The app is now running."
+      ]
+    }
+  ],
+
+  "tips_for_llms": {
+    "proactive_monitoring": "Don't just deploy and say 'deployment started'. Always monitor until completion or failure.",
+    "read_logs_thoroughly": "When build fails, read ALL the logs carefully. The error might be buried in the middle.",
+    "understand_project_type": "Look at files in the project to understand the language/framework (package.json = Node, requirements.txt = Python, go.mod = Go, Cargo.toml = Rust, etc.)",
+    "suggest_fixes": "When you see an error, don't just report it. Analyze and suggest concrete fixes.",
+    "use_local_deployment_for_fixes": "When iterating on fixes, suggest deploy_from_local instead of requiring git commits each time.",
+    "respect_permissions": "If user gets 403, explain RBAC: they may need admin to grant them access to that app.",
+    "builder_auto_detection": "The 'auto' builder is smart. It detects Dockerfile, or uses nixpacks for popular languages. Trust it unless there's a specific reason to override."
+  },
+
+  "common_nixpacks_configurations": {
+    "python": {
+      "file": "nixpacks.toml",
+      "examples": {
+        "python_311": "[phases.setup]\nnixpkgs = ['python311']\n\n[start]\ncmd = 'python main.py'",
+        "python_312_with_postgres": "[phases.setup]\nnixpkgs = ['python312', 'postgresql']\n\n[start]\ncmd = 'gunicorn app:app --bind 0.0.0.0:$PORT'"
+      }
+    },
+    "nodejs": {
+      "file": "nixpacks.toml",
+      "examples": {
+        "node_20": "[phases.setup]\nnixpkgs = ['nodejs_20']\n\n[start]\ncmd = 'npm start'",
+        "node_18_with_yarn": "[phases.setup]\nnixpkgs = ['nodejs_18', 'yarn']\n\n[phases.install]\ncmd = 'yarn install'\n\n[start]\ncmd = 'yarn start'"
+      }
+    },
+    "go": {
+      "file": "nixpacks.toml",
+      "examples": {
+        "go_1_21": "[phases.setup]\nnixpkgs = ['go_1_21']\n\n[phases.build]\ncmd = 'go build -o main .'\n\n[start]\ncmd = './main'"
+      }
+    },
+    "rust": {
+      "file": "nixpacks.toml",
+      "examples": {
+        "rust": "[phases.setup]\nnixpkgs = ['rustc', 'cargo']\n\n[start]\ncmd = 'cargo run --release'"
+      }
+    }
+  }
+}
