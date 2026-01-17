@@ -6,10 +6,10 @@ export class CitizenAPIClient {
 
   constructor(config: DeviceAuthConfig, baseUrl?: string) {
     this.config = config;
-    this.baseUrl = baseUrl || process.env.CITIZEN_API_URL || 'https://api.ustun.tech';
+    this.baseUrl = baseUrl || process.env.CITIZEN_API_URL || 'https://jolly-yonder.amber-ridge.app.selmangunes.com/api/v1';
   }
 
-  private getHeaders(): HeadersInit {
+  private getHeaders(): Record<string, string> {
     return {
       'Authorization': `Bearer ${this.config.access_token}`,
       'Content-Type': 'application/json',
@@ -27,7 +27,7 @@ export class CitizenAPIClient {
       throw new Error(`API request failed: ${response.status} ${error}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as any;
     return data.data || data;
   }
 
@@ -43,7 +43,7 @@ export class CitizenAPIClient {
       throw new Error(`API request failed: ${response.status} ${error}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as any;
     return data.data || data;
   }
 
@@ -66,7 +66,7 @@ export class CitizenAPIClient {
       throw new Error(`File upload failed: ${response.status} ${error}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as any;
     return data.data || data;
   }
 
@@ -81,7 +81,7 @@ export class CitizenAPIClient {
       throw new Error(`API request failed: ${response.status} ${error}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as any;
     return data.data || data;
   }
 }

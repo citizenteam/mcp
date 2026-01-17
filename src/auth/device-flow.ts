@@ -2,12 +2,13 @@ import { DeviceAuthConfig } from '../types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { exec } from 'child_process';
 
 export class DeviceAuthFlow {
   private apiUrl: string;
 
   constructor(apiUrl?: string) {
-    this.apiUrl = apiUrl || process.env.CITIZENAUTH_URL || 'https://auth.ustun.tech';
+    this.apiUrl = apiUrl || process.env.CITIZENAUTH_URL || 'https://ustun.tech';
   }
 
   async authenticate(): Promise<DeviceAuthConfig> {
@@ -25,13 +26,24 @@ export class DeviceAuthFlow {
       throw new Error(`Device init failed: ${initResponse.statusText}`);
     }
 
-    const initData = await initResponse.json();
-    const { device_code, user_code, verification_url_complete, interval } = initData.data;
+    const initData = await initResponse.json() as any;
+    const { device_code, user_code, interval } = initData.data;
+    
+    // Fix verification URL if it's pointing to localhost
+    let verification_url_complete = initData.data.verification_url_complete;
+    if (verification_url_complete.includes('localhost')) {
+      verification_url_complete = `${this.apiUrl}/device/verify?user_code=${user_code}`;
+    }
 
-    // 2. Display authorization URL
+    // 2. Display authorization URL and open browser
     console.error('\n🔐 DEVICE AUTHORIZATION REQUIRED\n');
     console.error(`Visit: ${verification_url_complete}\n`);
     console.error(`Or enter code: ${user_code}\n`);
+    console.error('Opening browser...\n');
+
+    // Open browser automatically
+    this.openBrowser(verification_url_complete);
+    
     console.error('Waiting for authorization...\n');
 
     // 3. Poll for authorization
@@ -49,7 +61,7 @@ export class DeviceAuthFlow {
         throw new Error('Failed to check authorization status');
       }
 
-      const statusData = await statusResponse.json();
+      const statusData = await statusResponse.json() as any;
 
       if (statusData.data.status === 'authorized') {
         console.error('✅ Authorized!\n');
@@ -78,7 +90,7 @@ export class DeviceAuthFlow {
       throw new Error(`Token exchange failed: ${tokenResponse.statusText}`);
     }
 
-    const tokenData = await tokenResponse.json();
+    const tokenData = await tokenResponse.json() as any;
 
     const config: DeviceAuthConfig = {
       access_token: tokenData.data.access_token,
@@ -144,5 +156,26 @@ export class DeviceAuthFlow {
 
   private getConfigPath(): string {
     return join(homedir(), '.citizen', 'mcp-config.json');
+  }
+
+  private openBrowser(url: string): void {
+    const platform = process.platform;
+    let command: string;
+
+    if (platform === 'darwin') {
+      command = `open "${url}"`;
+    } else if (platform === 'win32') {
+      command = `start "" "${url}"`;
+    } else {
+      // Linux
+      command = `xdg-open "${url}"`;
+    }
+
+    exec(command, (error) => {
+      if (error) {
+        console.error(`Could not open browser automatically: ${error.message}`);
+        console.error(`Please manually visit: ${url}`);
+      }
+    });
   }
 }

@@ -350,7 +350,7 @@ class CitizenMCPServer {
         git_branch: args.git_branch || 'main',
         builder: args.builder || 'auto',
       }
-    );
+    ) as any;
 
     return {
       content: [
@@ -379,7 +379,7 @@ class CitizenMCPServer {
         `/api/v1/citizen/apps/${args.app_name}/upload`,
         fileBuffer,
         filename
-      );
+      ) as any;
 
       // 3. Deploy
       const deployResult = await this.apiClient!.post(
@@ -388,7 +388,7 @@ class CitizenMCPServer {
           filename: uploadResult.filename,
           builder: args.builder || 'auto',
         }
-      );
+      ) as any;
 
       return {
         content: [

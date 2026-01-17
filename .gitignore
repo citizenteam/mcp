@@ -1,0 +1,14 @@
+node_modules
+/mcp-server/node_modules
+/mcp-server/dist
+/mcp-server/build
+/mcp-server/coverage
+/mcp-server/logs
+/mcp-server/tmp
+/mcp-server/temp
+/mcp-server/.tmp
+/mcp-server/.cache
+/mcp-server/.air
+/mcp-server/.dlv
+/mcp-server/.golangci-lint-cache
+dist
