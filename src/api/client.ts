@@ -1,5 +1,10 @@
 import { DeviceAuthConfig } from '../types.js';
 
+interface ApiResponse<T = any> {
+  data?: T;
+  [key: string]: any;
+}
+
 export class CitizenAPIClient {
   private baseUrl: string;
   private config: DeviceAuthConfig;
