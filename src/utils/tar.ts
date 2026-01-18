@@ -3,6 +3,23 @@ import { createWriteStream, createReadStream } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+// Directories and files to exclude from deployment
+const EXCLUDE_PATTERNS = [
+  'node_modules/**',
+  '.git/**',
+  '.gitignore',
+  '*.log',
+  '.env',
+  '.env.*',
+  'dist/**',
+  '.next/**',
+  '.nuxt/**',
+  '.cache/**',
+  'coverage/**',
+  '.DS_Store',
+  'Thumbs.db',
+];
+
 export async function createTarGz(sourceDir: string, outputPath?: string): Promise<string> {
   const output = outputPath || join(tmpdir(), `deploy-${Date.now()}.tar.gz`);
 
@@ -24,7 +41,14 @@ export async function createTarGz(sourceDir: string, outputPath?: string): Promi
     });
 
     archive.pipe(outputStream);
-    archive.directory(sourceDir, false);
+    
+    // Add directory with exclusions
+    archive.glob('**/*', {
+      cwd: sourceDir,
+      ignore: EXCLUDE_PATTERNS,
+      dot: true,
+    });
+    
     archive.finalize();
   });
 }

@@ -2,7 +2,7 @@ import { DeviceAuthConfig } from '../types.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { exec } from 'child_process';
+import open from 'open';
 
 export class DeviceAuthFlow {
   private apiUrl: string;
@@ -35,16 +35,17 @@ export class DeviceAuthFlow {
       verification_url_complete = `${this.apiUrl}/device/verify?user_code=${user_code}`;
     }
 
-    // 2. Display authorization URL and open browser
+    // 2. Display authorization URL and try to open browser
     console.error('\n🔐 DEVICE AUTHORIZATION REQUIRED\n');
-    console.error(`Visit: ${verification_url_complete}\n`);
-    console.error(`Or enter code: ${user_code}\n`);
-    console.error('Opening browser...\n');
+    console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+    console.error(`🌐 URL: ${verification_url_complete}\n`);
+    console.error(`🔑 Code: ${user_code}\n`);
+    console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
-    // Open browser automatically
-    this.openBrowser(verification_url_complete);
+    // Try to open browser
+    await this.openBrowser(verification_url_complete);
     
-    console.error('Waiting for authorization...\n');
+    console.error('Waiting for authorization (open the URL above in your browser)...\n');
 
     // 3. Poll for authorization
     let attempts = 0;
@@ -158,24 +159,13 @@ export class DeviceAuthFlow {
     return join(homedir(), '.citizen', 'mcp-config.json');
   }
 
-  private openBrowser(url: string): void {
-    const platform = process.platform;
-    let command: string;
-
-    if (platform === 'darwin') {
-      command = `open "${url}"`;
-    } else if (platform === 'win32') {
-      command = `start "" "${url}"`;
-    } else {
-      // Linux
-      command = `xdg-open "${url}"`;
+  private async openBrowser(url: string): Promise<void> {
+    try {
+      await open(url);
+      console.error('✅ Browser opened!\n');
+    } catch (error: any) {
+      console.error(`⚠️ Could not open browser: ${error.message}`);
+      console.error(`Please manually visit: ${url}\n`);
     }
-
-    exec(command, (error) => {
-      if (error) {
-        console.error(`Could not open browser automatically: ${error.message}`);
-        console.error(`Please manually visit: ${url}`);
-      }
-    });
   }
 }

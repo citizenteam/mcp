@@ -6,7 +6,7 @@ export class CitizenAPIClient {
 
   constructor(config: DeviceAuthConfig, baseUrl?: string) {
     this.config = config;
-    this.baseUrl = baseUrl || process.env.CITIZEN_API_URL || 'https://jolly-yonder.amber-ridge.app.selmangunes.com/api/v1';
+    this.baseUrl = baseUrl || process.env.CITIZEN_API_URL || 'https://jolly-yonder.amber-ridge.app.selmangunes.com';
   }
 
   private getHeaders(): Record<string, string> {
@@ -48,17 +48,17 @@ export class CitizenAPIClient {
   }
 
   async uploadFile(path: string, file: Buffer, filename: string): Promise<any> {
-    const FormData = (await import('form-data')).default;
+    // Use native FormData with Blob for Node.js 18+ compatibility
     const formData = new FormData();
-    formData.append('file', file, filename);
+    const blob = new Blob([file], { type: 'application/gzip' });
+    formData.append('file', blob, filename);
 
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.config.access_token}`,
-        ...formData.getHeaders(),
       },
-      body: formData as any,
+      body: formData,
     });
 
     if (!response.ok) {

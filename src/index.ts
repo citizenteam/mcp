@@ -313,16 +313,25 @@ class CitizenMCPServer {
   }
 
   private async handleListApps() {
-    const apps = await this.apiClient!.get<App[]>('/api/v1/citizen/apps');
+    const apps = await this.apiClient!.get<any>('/api/v1/citizen/apps');
+
+    // API returns string array like ["app1", "app2"] or object array
+    const appsList = Array.isArray(apps) ? apps : [];
 
     return {
       content: [
         {
           type: 'text',
-          text: apps.length === 0
+          text: appsList.length === 0
             ? 'No apps found. You may not have permission to view any apps.'
-            : `Found ${apps.length} app(s):\n\n` +
-              apps.map((app: any) => `• ${app.name} - ${app.status || 'unknown'}`).join('\n'),
+            : `Found ${appsList.length} app(s):\n\n` +
+              appsList.map((app: any) => {
+                // Handle both string array and object array
+                if (typeof app === 'string') {
+                  return `• ${app}`;
+                }
+                return `• ${app.app_name || app.name || 'unnamed'} - ${app.status || 'unknown'}`;
+              }).join('\n'),
         },
       ],
     };
