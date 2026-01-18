@@ -11,12 +11,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { DeviceAuthFlow } from './auth/device-flow.js';
-import { CitizenAPIClient } from './api/client.js';
 import { createTarGz } from './utils/tar.js';
 import { readFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { DeviceAuthConfig, App, DeploymentRun } from './types.js';
+import { DeviceAuthConfig, CitizenServer, AppWithServer } from './types.js';
+import open from 'open';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -24,8 +24,13 @@ const __dirname = dirname(__filename);
 class CitizenMCPServer {
   private server: Server;
   private authFlow: DeviceAuthFlow;
-  private apiClient: CitizenAPIClient | null = null;
   private config: DeviceAuthConfig | null = null;
+
+  // Server discovery cache
+  private servers: CitizenServer[] = [];
+  private appServerMap: Map<string, AppWithServer> = new Map(); // app_name -> server info
+  private runServerMap: Map<string, string> = new Map(); // run_id -> server_url (for tracking deployments)
+  private citizenAuthUrl: string;
 
   constructor() {
     this.server = new Server(
@@ -41,7 +46,8 @@ class CitizenMCPServer {
       }
     );
 
-    this.authFlow = new DeviceAuthFlow();
+    this.citizenAuthUrl = process.env.CITIZENAUTH_URL || 'https://ustun.tech';
+    this.authFlow = new DeviceAuthFlow(this.citizenAuthUrl);
     this.setupHandlers();
   }
 
@@ -90,6 +96,14 @@ class CitizenMCPServer {
   private getTools(): Tool[] {
     return [
       {
+        name: 'get_instructions',
+        description: 'CRITICAL: Call this FIRST before ANY deployment operation. Returns deployment instructions including polling intervals, error handling guides, and best practices. You MUST read and follow these instructions before calling deploy_from_git, deploy_from_local, or get_deployment_status.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
         name: 'authenticate',
         description: 'Authenticate with Citizen platform using device flow. ALWAYS call this first if check_auth_status shows not authenticated. Opens browser for user authorization.',
         inputSchema: {
@@ -100,6 +114,14 @@ class CitizenMCPServer {
       {
         name: 'check_auth_status',
         description: 'Check current authentication status. Call this at the start of any deployment workflow to ensure you are authenticated.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
+        name: 'list_servers',
+        description: 'List all Citizen servers in your organization. This discovers available deployment targets. Call this before list_apps to see which servers are available.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -205,6 +227,20 @@ class CitizenMCPServer {
           required: ['app_name'],
         },
       },
+      {
+        name: 'open_app_url',
+        description: 'Open app URL in system browser (not Cursor browser). Use this after successful deployment to verify the app is working. Opens the default browser just like device authentication flow.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            app_name: {
+              type: 'string',
+              description: 'Application name to open in browser',
+            },
+          },
+          required: ['app_name'],
+        },
+      },
     ];
   }
 
@@ -214,18 +250,24 @@ class CitizenMCPServer {
       if (!this.config) {
         throw new Error('Not authenticated. Please run the "authenticate" tool first.');
       }
-      this.apiClient = new CitizenAPIClient(this.config);
     }
   }
 
   private async handleToolCall(name: string, args: any): Promise<any> {
     try {
       switch (name) {
+        case 'get_instructions':
+          return await this.handleGetInstructions();
+
         case 'authenticate':
           return await this.handleAuthenticate();
 
         case 'check_auth_status':
           return await this.handleCheckAuthStatus();
+
+        case 'list_servers':
+          await this.ensureAuth();
+          return await this.handleListServers();
 
         case 'list_apps':
           await this.ensureAuth();
@@ -251,6 +293,10 @@ class CitizenMCPServer {
           await this.ensureAuth();
           return await this.handleListDeploymentRuns(args.app_name);
 
+        case 'open_app_url':
+          await this.ensureAuth();
+          return await this.handleOpenAppUrl(args.app_name);
+
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -267,9 +313,27 @@ class CitizenMCPServer {
     }
   }
 
+  private async handleGetInstructions() {
+    const instructionsPath = join(__dirname, '..', 'instructions.json');
+    const instructions = readFileSync(instructionsPath, 'utf-8');
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: instructions,
+        },
+      ],
+    };
+  }
+
   private async handleAuthenticate() {
     this.config = await this.authFlow.authenticate();
-    this.apiClient = new CitizenAPIClient(this.config);
+
+    // Clear cached server/app data on new authentication
+    this.servers = [];
+    this.appServerMap.clear();
+    this.runServerMap.clear();
 
     return {
       content: [
@@ -312,39 +376,196 @@ class CitizenMCPServer {
     };
   }
 
-  private async handleListApps() {
-    const apps = await this.apiClient!.get<any>('/api/v1/citizen/apps');
+  // Fetch servers from CitizenAuth
+  private async fetchServers(): Promise<CitizenServer[]> {
+    const orgId = this.config!.organization.id;
+    const response = await fetch(
+      `${this.citizenAuthUrl}/api/v1/servers?org_id=${orgId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${this.config!.access_token}`,
+        },
+      }
+    );
 
-    // API returns string array like ["app1", "app2"] or object array
-    const appsList = Array.isArray(apps) ? apps : [];
+    if (!response.ok) {
+      throw new Error(`Failed to fetch servers: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    return data.data || [];
+  }
+
+  private async handleListServers() {
+    this.servers = await this.fetchServers();
+
+    if (this.servers.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'No Citizen servers found in your organization.',
+          },
+        ],
+      };
+    }
+
+    const serverList = this.servers.map(s =>
+      `• ${s.slug} (${s.domain})`
+    ).join('\n');
 
     return {
       content: [
         {
           type: 'text',
-          text: appsList.length === 0
-            ? 'No apps found. You may not have permission to view any apps.'
-            : `Found ${appsList.length} app(s):\n\n` +
-              appsList.map((app: any) => {
-                // Handle both string array and object array
-                if (typeof app === 'string') {
-                  return `• ${app}`;
-                }
-                return `• ${app.app_name || app.name || 'unnamed'} - ${app.status || 'unknown'}`;
-              }).join('\n'),
+          text: `Found ${this.servers.length} server(s):\n\n${serverList}\n\nUse list_apps to see apps across all servers.`,
         },
       ],
     };
   }
 
+  private async handleListApps() {
+    // First, discover servers if not already done
+    if (this.servers.length === 0) {
+      this.servers = await this.fetchServers();
+    }
+
+    if (this.servers.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'No Citizen servers found. Please ensure your organization has at least one server configured.',
+          },
+        ],
+      };
+    }
+
+    // Clear previous app-server mapping
+    this.appServerMap.clear();
+
+    // Fetch apps from each server
+    const allApps: { serverSlug: string; serverUrl: string; apps: string[] }[] = [];
+
+    for (const server of this.servers) {
+      const serverUrl = `https://${server.domain}`;
+
+      try {
+        const response = await fetch(`${serverUrl}/api/v1/citizen/apps`, {
+          headers: {
+            'Authorization': `Bearer ${this.config!.access_token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json() as any;
+          const apps = data.data || data || [];
+          const appsList = Array.isArray(apps) ? apps : [];
+
+          // Map each app to its server
+          for (const app of appsList) {
+            const appName = typeof app === 'string' ? app : (app.app_name || app.name);
+            if (appName) {
+              this.appServerMap.set(appName, {
+                app_name: appName,
+                status: typeof app === 'object' ? app.status : undefined,
+                server_url: serverUrl,
+                server_slug: server.slug,
+              });
+            }
+          }
+
+          allApps.push({
+            serverSlug: server.slug,
+            serverUrl,
+            apps: appsList.map((a: any) => typeof a === 'string' ? a : (a.app_name || a.name)),
+          });
+        } else {
+          console.error(`Failed to fetch apps from ${server.slug}: ${response.status}`);
+        }
+      } catch (error: any) {
+        console.error(`Error fetching apps from ${server.slug}: ${error.message}`);
+      }
+    }
+
+    // Build response text
+    const totalApps = allApps.reduce((sum, s) => sum + s.apps.length, 0);
+
+    if (totalApps === 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'No apps found across all servers. You may not have permission to view any apps.',
+          },
+        ],
+      };
+    }
+
+    let responseText = `Found ${totalApps} app(s) across ${allApps.length} server(s):\n\n`;
+
+    for (const serverApps of allApps) {
+      if (serverApps.apps.length > 0) {
+        responseText += `📦 ${serverApps.serverSlug}:\n`;
+        for (const app of serverApps.apps) {
+          responseText += `  • ${app}\n`;
+        }
+        responseText += '\n';
+      }
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: responseText.trim(),
+        },
+      ],
+    };
+  }
+
+  // Get server URL for an app (from cache or by refreshing)
+  private async getServerUrlForApp(appName: string): Promise<string> {
+    // Check cache first
+    let appInfo = this.appServerMap.get(appName);
+
+    // If not cached, refresh the app list
+    if (!appInfo) {
+      await this.handleListApps();
+      appInfo = this.appServerMap.get(appName);
+    }
+
+    if (!appInfo) {
+      throw new Error(`App '${appName}' not found. Use list_apps to see available apps.`);
+    }
+
+    return appInfo.server_url;
+  }
+
   private async handleGetAppInfo(appName: string) {
-    const info = await this.apiClient!.get(`/api/v1/citizen/apps/${appName}`);
+    const serverUrl = await this.getServerUrlForApp(appName);
+
+    const response = await fetch(`${serverUrl}/api/v1/citizen/apps/${appName}`, {
+      headers: {
+        'Authorization': `Bearer ${this.config!.access_token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get app info: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    const info = data.data || data;
+
+    const appServerInfo = this.appServerMap.get(appName);
 
     return {
       content: [
         {
           type: 'text',
           text: `App: ${appName}\n` +
+                `Server: ${appServerInfo?.server_slug || 'unknown'}\n` +
                 JSON.stringify(info, null, 2),
         },
       ],
@@ -352,20 +573,41 @@ class CitizenMCPServer {
   }
 
   private async handleDeployFromGit(args: any) {
-    const result = await this.apiClient!.post(
-      `/api/v1/citizen/apps/${args.app_name}/deploy`,
-      {
+    const serverUrl = await this.getServerUrlForApp(args.app_name);
+    const appServerInfo = this.appServerMap.get(args.app_name);
+
+    const response = await fetch(`${serverUrl}/api/v1/citizen/apps/${args.app_name}/deploy`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.config!.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         git_url: args.git_url,
         git_branch: args.git_branch || 'main',
         builder: args.builder || 'auto',
-      }
-    ) as any;
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Deployment failed: ${response.status} ${error}`);
+    }
+
+    const data = await response.json() as any;
+    const result = data.data || data;
+
+    // Cache run_id -> server_url mapping for status tracking
+    if (result.run_id) {
+      this.runServerMap.set(result.run_id, serverUrl);
+    }
 
     return {
       content: [
         {
           type: 'text',
           text: `✅ Deployment started\n` +
+                `Server: ${appServerInfo?.server_slug || 'unknown'}\n` +
                 `Run ID: ${result.run_id}\n` +
                 `Status: ${result.status}\n` +
                 `Source: ${args.git_url}@${args.git_branch || 'main'}\n\n` +
@@ -376,6 +618,9 @@ class CitizenMCPServer {
   }
 
   private async handleDeployFromLocal(args: any) {
+    const serverUrl = await this.getServerUrlForApp(args.app_name);
+    const appServerInfo = this.appServerMap.get(args.app_name);
+
     // 1. Create tar.gz
     const tarPath = await createTarGz(args.directory_path);
 
@@ -384,26 +629,59 @@ class CitizenMCPServer {
       const fileBuffer = readFileSync(tarPath);
       const filename = `${args.app_name}-${Date.now()}.tar.gz`;
 
-      const uploadResult = await this.apiClient!.uploadFile(
-        `/api/v1/citizen/apps/${args.app_name}/upload`,
-        fileBuffer,
-        filename
-      ) as any;
+      // Use native FormData with Blob for Node.js 18+ compatibility
+      const formData = new FormData();
+      const blob = new Blob([fileBuffer], { type: 'application/gzip' });
+      formData.append('file', blob, filename);
+
+      const uploadResponse = await fetch(`${serverUrl}/api/v1/citizen/apps/${args.app_name}/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.config!.access_token}`,
+        },
+        body: formData,
+      });
+
+      if (!uploadResponse.ok) {
+        const error = await uploadResponse.text();
+        throw new Error(`Upload failed: ${uploadResponse.status} ${error}`);
+      }
+
+      const uploadData = await uploadResponse.json() as any;
+      const uploadResult = uploadData.data || uploadData;
 
       // 3. Deploy
-      const deployResult = await this.apiClient!.post(
-        `/api/v1/citizen/apps/${args.app_name}/deploy-local`,
-        {
+      const deployResponse = await fetch(`${serverUrl}/api/v1/citizen/apps/${args.app_name}/deploy-local`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.config!.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           filename: uploadResult.filename,
           builder: args.builder || 'auto',
-        }
-      ) as any;
+        }),
+      });
+
+      if (!deployResponse.ok) {
+        const error = await deployResponse.text();
+        throw new Error(`Deploy failed: ${deployResponse.status} ${error}`);
+      }
+
+      const deployData = await deployResponse.json() as any;
+      const deployResult = deployData.data || deployData;
+
+      // Cache run_id -> server_url mapping for status tracking
+      if (deployResult.run_id) {
+        this.runServerMap.set(deployResult.run_id, serverUrl);
+      }
 
       return {
         content: [
           {
             type: 'text',
             text: `✅ Local deployment started\n` +
+                  `Server: ${appServerInfo?.server_slug || 'unknown'}\n` +
                   `File: ${uploadResult.filename}\n` +
                   `Size: ${(uploadResult.size / 1024 / 1024).toFixed(2)} MB\n` +
                   `Run ID: ${deployResult.run_id}\n` +
@@ -418,21 +696,81 @@ class CitizenMCPServer {
     }
   }
 
-  private async handleGetDeploymentStatus(runId: string) {
-    const run = await this.apiClient!.get<DeploymentRun>(`/api/v1/citizen/runs/${runId}`);
+  // Get server URL for a run_id (from cache or by trying all servers)
+  private async getServerUrlForRun(runId: string): Promise<string> {
+    // Check cache first
+    const cachedUrl = this.runServerMap.get(runId);
+    if (cachedUrl) {
+      return cachedUrl;
+    }
 
-    const stepsText = run.steps
-      ? run.steps.map((step: any) => `  ${step.name}: ${step.status}`).join('\n')
-      : 'No steps available';
+    // If not cached, try each server until we find the run
+    if (this.servers.length === 0) {
+      this.servers = await this.fetchServers();
+    }
+
+    for (const server of this.servers) {
+      const serverUrl = `https://${server.domain}`;
+      try {
+        const response = await fetch(`${serverUrl}/api/v1/citizen/runs/${runId}`, {
+          headers: {
+            'Authorization': `Bearer ${this.config!.access_token}`,
+          },
+        });
+
+        if (response.ok) {
+          // Found it - cache and return
+          this.runServerMap.set(runId, serverUrl);
+          return serverUrl;
+        }
+      } catch (error) {
+        // Continue to next server
+      }
+    }
+
+    throw new Error(`Deployment run '${runId}' not found on any server.`);
+  }
+
+  private async handleGetDeploymentStatus(runId: string) {
+    const serverUrl = await this.getServerUrlForRun(runId);
+
+    const response = await fetch(`${serverUrl}/api/v1/citizen/runs/${runId}`, {
+      headers: {
+        'Authorization': `Bearer ${this.config!.access_token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get deployment status: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    const run = data.data || data;
+
+    // Debug: log the raw response structure
+    console.error('[DEBUG] Run response:', JSON.stringify(run, null, 2));
+
+    // Handle steps - API returns step_name, not name
+    let stepsText = 'No steps available';
+    if (run.steps && Array.isArray(run.steps) && run.steps.length > 0) {
+      stepsText = run.steps.map((step: any) => {
+        const stepName = step.step_name || step.name || step.StepName || 'unknown';
+        const stepStatus = step.status || step.Status || 'pending';
+        return `  ${stepName}: ${stepStatus}`;
+      }).join('\n');
+    }
+
+    // Get git_url or source
+    const source = run.git_url || run.source || run.GitURL || 'local upload';
 
     return {
       content: [
         {
           type: 'text',
-          text: `Deployment Run: ${run.run_id}\n` +
+          text: `Deployment Run: ${run.run_id || run.id}\n` +
                 `App: ${run.app_name}\n` +
                 `Status: ${run.status}\n` +
-                `Source: ${run.source}\n\n` +
+                `Source: ${source}\n\n` +
                 `Steps:\n${stepsText}`,
         },
       ],
@@ -440,9 +778,27 @@ class CitizenMCPServer {
   }
 
   private async handleListDeploymentRuns(appName: string) {
-    const runs = await this.apiClient!.get<DeploymentRun[]>(
-      `/api/v1/citizen/apps/${appName}/runs`
-    );
+    const serverUrl = await this.getServerUrlForApp(appName);
+
+    const response = await fetch(`${serverUrl}/api/v1/citizen/apps/${appName}/runs`, {
+      headers: {
+        'Authorization': `Bearer ${this.config!.access_token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to list deployment runs: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    const runs = data.data || data || [];
+
+    // Cache run_ids for this app's server
+    for (const run of runs) {
+      if (run.run_id) {
+        this.runServerMap.set(run.run_id, serverUrl);
+      }
+    }
 
     return {
       content: [
@@ -454,6 +810,52 @@ class CitizenMCPServer {
               runs.map((run: any) =>
                 `• ${run.run_id} - ${run.status} (${new Date(run.created_at).toLocaleString()})`
               ).join('\n'),
+        },
+      ],
+    };
+  }
+
+  private async handleOpenAppUrl(appName: string) {
+    const serverUrl = await this.getServerUrlForApp(appName);
+
+    // Get app info to find the URL
+    const response = await fetch(`${serverUrl}/api/v1/citizen/apps/${appName}`, {
+      headers: {
+        'Authorization': `Bearer ${this.config!.access_token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get app info: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    const info = data.data || data;
+
+    // Get the first domain
+    const domains = info.domains || [];
+    if (domains.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `No domain found for app ${appName}. The app may not be deployed yet.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const url = `https://${domains[0]}`;
+
+    // Open in system browser (like device authentication)
+    await open(url);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `🌐 Opened ${url} in system browser.\n\nIf the app requires authentication, you'll be redirected to login first.`,
         },
       ],
     };

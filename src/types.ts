@@ -45,3 +45,20 @@ export interface Organization {
   slug: string;
   role: string;
 }
+
+// Server from CitizenAuth API
+export interface CitizenServer {
+  id: string;
+  slug: string;
+  domain: string;
+  organization_id: string;
+  created_at: string;
+}
+
+// App with server info for deployment
+export interface AppWithServer {
+  app_name: string;
+  status?: string;
+  server_url: string;
+  server_slug: string;
+}

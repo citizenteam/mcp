@@ -57,12 +57,22 @@
         },
         {
           "action": "monitor_deployment",
-          "description": "Monitor deployment status and logs",
+          "description": "Monitor deployment status and logs with progressive waiting",
           "tool": "get_deployment_status",
           "args": {
             "run_id": "string - from previous deploy step"
           },
-          "poll_interval": "Poll every 5-10 seconds until status is 'completed' or 'failed'",
+          "poll_strategy": {
+            "description": "Use progressive wait intervals to avoid spamming the API",
+            "intervals": [
+              "First check: wait 15 seconds after deployment starts",
+              "Second check: wait 30 seconds if still building",
+              "Subsequent checks: wait 60 seconds between each check",
+              "Building phase can take 1-10 minutes, be patient!"
+            ],
+            "important": "Do NOT call get_deployment_status rapidly in succession. Wait between calls."
+          },
+          "on_success": "When deployment completes successfully, call 'open_app_url' tool to open the app in system browser",
           "important": "ALWAYS monitor deployment logs. If deployment fails, read the logs to understand the error."
         }
       ]
@@ -95,10 +105,17 @@
         },
         {
           "action": "monitor_deployment",
+          "description": "Monitor deployment with progressive wait intervals",
           "tool": "get_deployment_status",
           "args": {
             "run_id": "string - from deploy response"
-          }
+          },
+          "poll_strategy": {
+            "first_check": "Wait 15 seconds after deployment starts",
+            "second_check": "Wait 30 seconds if still building",
+            "subsequent_checks": "Wait 60 seconds between each check"
+          },
+          "on_success": "Call 'open_app_url' tool to open app in system browser"
         }
       ]
     },
@@ -208,7 +225,8 @@
     "understand_rbac": "You may not have permission to all apps. list_apps returns only apps you can access. If you get 403 error, you don't have permission.",
     "use_local_for_iteration": "When debugging and fixing issues, use deploy_from_local for faster iteration (no git commit needed).",
     "builder_selection": "Use 'auto' builder unless you know the project needs specific builder. 'dockerfile' requires Dockerfile in project root.",
-    "poll_responsibly": "When monitoring deployment, poll every 5-10 seconds, not more frequently."
+    "poll_responsibly": "CRITICAL: Do NOT poll deployment status rapidly. Use progressive wait intervals: first check at 15 seconds, then 30 seconds, then 60 seconds. Build steps take time - be patient and wait before checking again.",
+    "open_url_after_deployment": "After successful deployment, ALWAYS use 'open_app_url' tool to open the app in the system browser (not Cursor browser). This opens the default browser just like device authentication flow."
   },
 
   "permission_model": {
@@ -318,6 +336,9 @@
 
   "tips_for_llms": {
     "proactive_monitoring": "Don't just deploy and say 'deployment started'. Always monitor until completion or failure.",
+    "CRITICAL_polling_intervals": "NEVER call get_deployment_status rapidly! Use progressive waits: 15s → 30s → 60s. Building can take 5-10 minutes. Be patient and wait between status checks.",
+    "wait_before_first_check": "After starting deployment, wait at least 15 seconds before first status check. Don't check immediately.",
+    "verify_with_browser": "After successful deployment, ALWAYS call 'open_app_url' tool to open the app in the system browser. Do NOT use Cursor's browser tools - use the MCP's open_app_url which opens the system default browser.",
     "read_logs_thoroughly": "When build fails, read ALL the logs carefully. The error might be buried in the middle.",
     "understand_project_type": "Look at files in the project to understand the language/framework (package.json = Node, requirements.txt = Python, go.mod = Go, Cargo.toml = Rust, etc.)",
     "suggest_fixes": "When you see an error, don't just report it. Analyze and suggest concrete fixes.",
