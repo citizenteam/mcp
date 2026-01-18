@@ -1,11 +1,12 @@
 {
   "name": "@citizenteam/mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Model Context Protocol server for deploying applications to Citizen platform. Enables Claude Desktop, Cursor, and VS Code to deploy apps with intelligent error handling and automatic fixes.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "citizen-mcp": "dist/index.js"
+    "citizen-mcp": "./dist/index.js",
+    "@citizenteam/mcp": "./dist/index.js"
   },
   "files": [
     "dist",
@@ -16,14 +17,14 @@
   "scripts": {
     "build": "tsc",
     "dev": "bun --watch run src/index.ts",
-    "start": "bun run src/index.ts",
+    "start": "node dist/index.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "archiver": "^7.0.1",
     "form-data": "^4.0.1",
-    "open": "^11.0.0"
+    "open": "^10.1.0"
   },
   "devDependencies": {
     "@types/archiver": "^6.0.0",
@@ -48,13 +49,16 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/citizenteam/deployment-mcp.git"
+    "url": "https://github.com/citizenteam/mcp.git"
   },
   "homepage": "https://citizen.ustun.tech",
   "bugs": {
-    "url": "https://github.com/citizenteam/deployment-mcp/issues"
+    "url": "https://github.com/citizenteam/mcp/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
